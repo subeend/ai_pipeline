@@ -1,0 +1,344 @@
+{
+  "components": {
+    "comp-autolabel-step": {
+      "executorLabel": "exec-autolabel-step",
+      "inputDefinitions": {
+        "parameters": {
+          "base_weights_gcs": {
+            "parameterType": "STRING"
+          },
+          "bucket": {
+            "parameterType": "STRING"
+          },
+          "image_exts": {
+            "defaultValue": ".png,.jpg,.jpeg",
+            "isOptional": true,
+            "parameterType": "STRING"
+          },
+          "retrain_prefix": {
+            "parameterType": "STRING"
+          },
+          "score_thresh": {
+            "defaultValue": 0.25,
+            "isOptional": true,
+            "parameterType": "NUMBER_DOUBLE"
+          }
+        }
+      }
+    },
+    "comp-condition-1": {
+      "dag": {
+        "tasks": {
+          "mark-used-step": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-mark-used-step"
+            },
+            "inputs": {
+              "parameters": {
+                "bucket": {
+                  "componentInputParameter": "pipelinechannel--bucket"
+                },
+                "retrain_prefix": {
+                  "componentInputParameter": "pipelinechannel--retrain_prefix"
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "mark-used-step"
+            }
+          }
+        }
+      },
+      "inputDefinitions": {
+        "parameters": {
+          "pipelinechannel--bucket": {
+            "parameterType": "STRING"
+          },
+          "pipelinechannel--retrain_prefix": {
+            "parameterType": "STRING"
+          },
+          "pipelinechannel--train-step-Output": {
+            "parameterType": "BOOLEAN"
+          }
+        }
+      }
+    },
+    "comp-mark-used-step": {
+      "executorLabel": "exec-mark-used-step",
+      "inputDefinitions": {
+        "parameters": {
+          "bucket": {
+            "parameterType": "STRING"
+          },
+          "retrain_prefix": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    },
+    "comp-train-step": {
+      "executorLabel": "exec-train-step",
+      "inputDefinitions": {
+        "parameters": {
+          "base_weights_gcs": {
+            "parameterType": "STRING"
+          },
+          "bucket": {
+            "parameterType": "STRING"
+          },
+          "epochs": {
+            "defaultValue": 30.0,
+            "isOptional": true,
+            "parameterType": "NUMBER_INTEGER"
+          },
+          "imgsz": {
+            "defaultValue": 640.0,
+            "isOptional": true,
+            "parameterType": "NUMBER_INTEGER"
+          },
+          "min_improve": {
+            "defaultValue": 0.0,
+            "isOptional": true,
+            "parameterType": "NUMBER_DOUBLE"
+          },
+          "min_map50": {
+            "defaultValue": 0.6,
+            "isOptional": true,
+            "parameterType": "NUMBER_DOUBLE"
+          },
+          "out_model_uri": {
+            "parameterType": "STRING"
+          },
+          "retrain_prefix": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "parameters": {
+          "Output": {
+            "parameterType": "BOOLEAN"
+          }
+        }
+      }
+    }
+  },
+  "deploymentSpec": {
+    "executors": {
+      "exec-autolabel-step": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "autolabel_step"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'ultralytics==8.3.0' 'google-cloud-storage>=2.16.0' 'opencv-python-headless' 'numpy' 'pyyaml'  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.2' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef autolabel_step(\n    bucket: str,\n    retrain_prefix: str,\n    base_weights_gcs: str,\n    image_exts: str = \".png,.jpg,.jpeg\",\n    score_thresh: float = 0.25,\n):\n    \"\"\"\n    gs://{bucket}/{retrain_prefix}/ \uc544\ub798 \uc774\ubbf8\uc9c0\uc5d0 YOLO \ucd94\ub860 \u2192 \uac19\uc740 \uacbd\ub85c\uc5d0 .txt \uc800\uc7a5\n    \"\"\"\n    import os\n    import cv2, numpy as np\n    from ultralytics import YOLO\n    from google.cloud import storage\n\n    exts = tuple([e.strip().lower() for e in image_exts.split(\",\") if e.strip()])\n    gcs = storage.Client()\n    bkt = gcs.bucket(bucket)\n\n    # \uac00\uc911\uce58 \ub2e4\uc6b4\ub85c\ub4dc\n    def gcs_to_local(uri: str, local_path: str):\n        assert uri.startswith(\"gs://\")\n        b, p = uri[5:].split(\"/\", 1)\n        storage.Client().bucket(b).blob(p).download_to_filename(local_path)\n\n    local_w = \"/tmp/base.pt\"\n    gcs_to_local(base_weights_gcs, local_w)\n    model = YOLO(local_w)\n\n    for blob in gcs.list_blobs(bucket, prefix=retrain_prefix):\n        name = blob.name\n        if not name.lower().endswith(exts):\n            continue\n        txt_name = os.path.splitext(name)[0] + \".txt\"\n        if bkt.blob(txt_name).exists():\n            continue\n\n        img_bytes = blob.download_as_bytes()\n        img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)\n\n        results = model.predict(source=img, conf=score_thresh, verbose=False)\n        lines = []\n        for r in results:\n            h, w = r.orig_shape\n            for b in r.boxes:\n                cls = int(b.cls[0]) if b.cls is not None else 0\n                x1, y1, x2, y2 = b.xyxy[0].tolist()\n                cx = ((x1 + x2) / 2.0) / w\n                cy = ((y1 + y2) / 2.0) / h\n                bw = (x2 - x1) / w\n                bh = (y2 - y1) / h\n                lines.append(f\"{cls} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\")\n\n        bkt.blob(txt_name).upload_from_string(\"\\n\".join(lines) if lines else \"\", content_type=\"text/plain\")\n\n"
+          ],
+          "image": "us-docker.pkg.dev/vertex-ai/training/pytorch-cpu.2-0:latest"
+        }
+      },
+      "exec-mark-used-step": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "mark_used_step"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'google-cloud-storage>=2.16.0'  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.2' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef mark_used_step(bucket: str, retrain_prefix: str):\n    \"\"\"\uac8c\uc774\ud2b8 \ud1b5\uacfc \uc2dc\uc5d0\ub9cc \ud638\ucd9c\ub428: \uc774\ubbf8\uc9c0\ub4e4\uc758 metadata used=true \uc124\uc815\"\"\"\n    from google.cloud import storage\n    IMG_EXTS = (\".png\",\".jpg\",\".jpeg\",\".bmp\",\".tif\",\".tiff\")\n    gcs = storage.Client()\n    bkt = gcs.bucket(bucket)\n    for blob in gcs.list_blobs(bucket, prefix=retrain_prefix):\n        if not blob.name.lower().endswith(IMG_EXTS):\n            continue\n        b = bkt.blob(blob.name)\n        md = b.metadata or {}\n        if md.get(\"used\") == \"true\":\n            continue\n        md[\"used\"] = \"true\"\n        b.metadata = md\n        b.patch()\n\n"
+          ],
+          "image": "us-docker.pkg.dev/vertex-ai/training/pytorch-cpu.2-0:latest"
+        }
+      },
+      "exec-train-step": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "train_step"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'ultralytics==8.3.0' 'google-cloud-storage>=2.16.0' 'pyyaml'  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.2' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef train_step(\n    bucket: str,\n    retrain_prefix: str,\n    base_weights_gcs: str,\n    out_model_uri: str,\n    epochs: int = 30,\n    imgsz: int = 640,\n    min_map50: float = 0.60,\n    min_improve: float = 0.00,\n) -> bool: \n    ...\n    \"\"\"\n    retrain_prefix \ub370\uc774\ud130\ub85c \ud559\uc2b5\ud55c \uc0c8 \ubaa8\ub378\uc744 \uac19\uc740 \ub370\uc774\ud130\ub85c \uac80\uc99d.\n\n    \"\"\"\n    import os, csv, yaml\n    from ultralytics import YOLO\n    from google.cloud import storage\n\n    IMG_EXTS = (\".png\",\".jpg\",\".jpeg\",\".bmp\",\".tif\",\".tiff\")\n    gcs = storage.Client()\n    bkt = gcs.bucket(bucket)\n\n    # \ub85c\uceec \ub370\uc774\ud130\uc14b \uad6c\uc131\n    ds = \"/tmp/ds\"; os.makedirs(ds, exist_ok=True)\n    img_dir = os.path.join(ds, \"images\"); lbl_dir = os.path.join(ds, \"labels\")\n    os.makedirs(img_dir, exist_ok=True); os.makedirs(lbl_dir, exist_ok=True)\n\n    for blob in gcs.list_blobs(bucket, prefix=retrain_prefix):\n        if blob.name.lower().endswith(IMG_EXTS):\n            img_local = os.path.join(img_dir, os.path.basename(blob.name))\n            blob.download_to_filename(img_local)\n            txt_name = os.path.splitext(blob.name)[0] + \".txt\"\n            lbl_local = os.path.join(lbl_dir, os.path.basename(txt_name))\n            tblob = bkt.blob(txt_name)\n            if tblob.exists():\n                tblob.download_to_filename(lbl_local)\n            else:\n                open(lbl_local, \"w\").close()  # negative\n\n    # data.yaml\n    data_yaml = os.path.join(ds, \"data.yaml\")\n    with open(data_yaml, \"w\") as f:\n        yaml.safe_dump({\"path\": ds, \"train\": \"images\", \"val\": \"images\", \"names\": [\"defect\"]}, f)\n\n    # \ub3c4\uc6b0\ubbf8: results.csv\uc5d0\uc11c mAP50 \uc77d\uae30\n    def parse_last_map50(csv_path: str) -> float:\n        if not os.path.exists(csv_path): return float(\"nan\")\n        with open(csv_path, newline=\"\") as f:\n            rows = list(csv.DictReader(f))\n        if not rows: return float(\"nan\")\n        last = rows[-1]\n\n        for k in last.keys():\n            lk = k.lower()\n            if \"map50\" in lk and \"95\" not in lk:\n                try: return float(last[k])\n                except: pass\n        return float(\"nan\")\n\n    # \ubca0\uc774\uc2a4 \uc131\ub2a5\n    local_w = \"/tmp/base.pt\"\n    wb, wo = base_weights_gcs[5:].split(\"/\", 1)\n    storage.Client().bucket(wb).blob(wo).download_to_filename(local_w)\n\n    base_model = YOLO(local_w)\n    base_proj = \"/tmp/run_base\"\n    base_model.val(data=data_yaml, imgsz=imgsz, project=base_proj, name=\"val\", verbose=False)\n    base_map50 = parse_last_map50(os.path.join(base_proj, \"val\", \"results.csv\"))\n\n    # \ud559\uc2b5\n    model = YOLO(local_w)\n    new_proj = \"/tmp/run\"\n    model.train(data=data_yaml, epochs=epochs, imgsz=imgsz, project=new_proj, name=\"train\", exist_ok=True)\n    best_local = os.path.join(new_proj, \"train\", \"weights\", \"best.pt\")\n\n    # \uc0c8 \uc131\ub2a5\n    new_model = YOLO(best_local)\n    new_proj_val = \"/tmp/run_new\"\n    new_model.val(data=data_yaml, imgsz=imgsz, project=new_proj_val, name=\"val\", verbose=False)\n    new_map50 = parse_last_map50(os.path.join(new_proj_val, \"val\", \"results.csv\"))\n\n    print(f\"[gate] base mAP50={base_map50:.4f}, new mAP50={new_map50:.4f}, \"\n          f\"min_map50={min_map50}, min_improve={min_improve}\")\n\n    passed = False\n    try:\n        if (new_map50 >= min_map50) and ((new_map50 - base_map50) >= min_improve):\n            passed = True\n    except:\n        passed = False\n\n    if passed:\n        out_bkt, out_blob = out_model_uri[5:].split(\"/\", 1)\n        storage.Client().bucket(out_bkt).blob(out_blob).upload_from_filename(best_local)\n        print(\"[train] uploaded best.pt to\", out_model_uri)\n    else:\n        print(\"[train] gate failed -> NOT uploading to\", out_model_uri)\n\n    return passed\n\n"
+          ],
+          "image": "us-docker.pkg.dev/vertex-ai/training/pytorch-cpu.2-0:latest"
+        }
+      }
+    }
+  },
+  "pipelineInfo": {
+    "name": "yolo-autolabel-train"
+  },
+  "root": {
+    "dag": {
+      "tasks": {
+        "autolabel-step": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-autolabel-step"
+          },
+          "inputs": {
+            "parameters": {
+              "base_weights_gcs": {
+                "componentInputParameter": "base_weights_gcs"
+              },
+              "bucket": {
+                "componentInputParameter": "bucket"
+              },
+              "retrain_prefix": {
+                "componentInputParameter": "retrain_prefix"
+              },
+              "score_thresh": {
+                "componentInputParameter": "score_thresh"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "autolabel-step"
+          }
+        },
+        "condition-1": {
+          "componentRef": {
+            "name": "comp-condition-1"
+          },
+          "dependentTasks": [
+            "train-step"
+          ],
+          "inputs": {
+            "parameters": {
+              "pipelinechannel--bucket": {
+                "componentInputParameter": "bucket"
+              },
+              "pipelinechannel--retrain_prefix": {
+                "componentInputParameter": "retrain_prefix"
+              },
+              "pipelinechannel--train-step-Output": {
+                "taskOutputParameter": {
+                  "outputParameterKey": "Output",
+                  "producerTask": "train-step"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "condition-1"
+          },
+          "triggerPolicy": {
+            "condition": "'inputs.parameter_values['pipelinechannel--train-step-Output']' == 'true'"
+          }
+        },
+        "train-step": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-train-step"
+          },
+          "dependentTasks": [
+            "autolabel-step"
+          ],
+          "inputs": {
+            "parameters": {
+              "base_weights_gcs": {
+                "componentInputParameter": "base_weights_gcs"
+              },
+              "bucket": {
+                "componentInputParameter": "bucket"
+              },
+              "epochs": {
+                "componentInputParameter": "epochs"
+              },
+              "imgsz": {
+                "componentInputParameter": "imgsz"
+              },
+              "min_improve": {
+                "componentInputParameter": "min_improve"
+              },
+              "min_map50": {
+                "componentInputParameter": "min_map50"
+              },
+              "out_model_uri": {
+                "componentInputParameter": "out_model_uri"
+              },
+              "retrain_prefix": {
+                "componentInputParameter": "retrain_prefix"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "train-step"
+          }
+        }
+      }
+    },
+    "inputDefinitions": {
+      "parameters": {
+        "base_weights_gcs": {
+          "parameterType": "STRING"
+        },
+        "bucket": {
+          "parameterType": "STRING"
+        },
+        "epochs": {
+          "defaultValue": 30.0,
+          "isOptional": true,
+          "parameterType": "NUMBER_INTEGER"
+        },
+        "imgsz": {
+          "defaultValue": 640.0,
+          "isOptional": true,
+          "parameterType": "NUMBER_INTEGER"
+        },
+        "min_improve": {
+          "defaultValue": 0.0,
+          "isOptional": true,
+          "parameterType": "NUMBER_DOUBLE"
+        },
+        "min_map50": {
+          "defaultValue": 0.6,
+          "isOptional": true,
+          "parameterType": "NUMBER_DOUBLE"
+        },
+        "out_model_uri": {
+          "parameterType": "STRING"
+        },
+        "retrain_prefix": {
+          "parameterType": "STRING"
+        },
+        "score_thresh": {
+          "defaultValue": 0.25,
+          "isOptional": true,
+          "parameterType": "NUMBER_DOUBLE"
+        }
+      }
+    }
+  },
+  "schemaVersion": "2.1.0",
+  "sdkVersion": "kfp-2.14.2"
+}
