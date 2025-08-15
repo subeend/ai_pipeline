@@ -3,7 +3,7 @@
 Cloud Run 기반 **자동 재학습 트리거 서비스**와 Vertex AI **파이프라인 스펙**을 함께 관리하는 모노리포입니다.
 
 - `function/` — Cloud Run에 배포되는 HTTP 서비스(트리거/헬스체크).  
-  GCS `retrain/` 폴더의 이미지 개수를 확인하고, 임계치(예: 100장) 이상이면 **Vertex AI Custom Job / Pipeline** 실행을 트리거합니다.
+  GCS 폴더의 이미지 개수를 확인하고, 임계치(예: 300장) 이상이면 **Vertex AI Custom Job / Pipeline** 실행을 트리거합니다.
 - `pipeline/` — Vertex AI(KFP) **컴파일된 파이프라인 스펙**과 관련 스크립트/노트북을 둡니다.  
 
 ---
