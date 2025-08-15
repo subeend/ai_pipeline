@@ -17,7 +17,7 @@ ai_pipeline/
 ├─ pipeline/                # Vertex AI/KFP 파이프라인 스펙 및 도구
 │  ├─ yolo_compiled.json    # 컴파일된 파이프라인 스펙(등록만 하고 실행 금지)
 │  ├─ pipeline.py           # KFP v2 파이프라인 정의
-│  └─ compile.py         # 파이프라인 스펙(JSON)으로 컴파일
+│  └─ compile.py            # 파이프라인 스펙(JSON)으로 컴파일
 ├─ .gitignore               # 공통 무시 규칙
 └─ README.md                # 리포 개요(이 파일)
 
